@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod entries;
 pub mod fuzzy;
 pub mod git;
+pub mod gitstatus;
 pub mod init;
 pub mod naming;
 pub mod paths;

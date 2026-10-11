@@ -70,6 +70,7 @@ Environment:
   TRY_PATH                    Tries directory (default: ~/src/tries)
   TRY_PROJECTS                Graduate destination (default: parent of TRY_PATH)
   TRY_DELETE                  trash (default) or remove (rm -rf) for Ctrl-D
+  TRY_GIT_STATUS              0 hides the git markers in the list
   Settings can also live in ~/.config/try/config.toml (see `try config`).
 
 Keyboard:
@@ -449,6 +450,11 @@ fn cmd_config(args: &[String], ctx: &Ctx) -> CmdResult {
         s.projects_source
     );
     eprintln!("delete    {}  [{}]", s.delete, s.delete_source);
+    eprintln!(
+        "git       {}  [{}]",
+        if s.git_status { "on" } else { "off" },
+        s.git_status_source
+    );
     eprintln!("colors    {}", if s.color { "on" } else { "off" });
     Ok(Reply::Exit(0))
 }
@@ -491,6 +497,7 @@ fn cmd_cd(mut args: Vec<String>, ctx: Ctx) -> CmdResult {
     )
     .map_err(|e| format!("cannot open {}: {e}", ctx.tries.display()))?;
     selector.set_trash(ctx.settings.delete == DeleteMode::Trash);
+    selector.set_git_status(ctx.settings.git_status);
     let outcome = term::run(&mut selector, ctx.hooks).map_err(|e| e.to_string())?;
     Ok(match outcome {
         Outcome::Cancel => Reply::Cancelled,

@@ -32,6 +32,12 @@ impl Style {
     pub fn highlight(&self, t: &str) -> String {
         self.wrap(t, "\x1b[1;33m", FG_BOLD_OFF)
     }
+    pub fn good(&self, t: &str) -> String {
+        self.wrap(t, "\x1b[32m", FG_OFF)
+    }
+    pub fn warn(&self, t: &str) -> String {
+        self.wrap(t, "\x1b[33m", FG_OFF)
+    }
     pub fn bold(&self, t: &str) -> String {
         self.wrap(t, "\x1b[1m", "\x1b[22m")
     }

@@ -9,7 +9,9 @@ use super::keys::Key;
 use super::style::{clip, width, Style, RESET};
 use crate::entries::{self, Entry};
 use crate::fuzzy::{Fuzzy, Match};
+use crate::gitstatus::{self, GitStatus, Probe};
 use crate::naming;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -64,9 +66,17 @@ impl Dialog {
 
 #[derive(Debug)]
 enum Kind {
-    Rename { name: String },
-    Graduate { name: String, source: PathBuf },
-    ConfirmDelete,
+    Rename {
+        name: String,
+    },
+    Graduate {
+        name: String,
+        source: PathBuf,
+    },
+    /// `warnings`: unsaved git work among the marked directories.
+    ConfirmDelete {
+        warnings: Vec<String>,
+    },
     NewName,
 }
 
@@ -98,6 +108,11 @@ pub struct Selector {
     now: SystemTime,
     /// Whether confirmed deletes go to the trash (only affects the dialog text).
     trash: bool,
+    git_enabled: bool,
+    git: HashMap<String, Probe>,
+    git_requested: HashSet<String>,
+    /// Range of `matches` indices drawn by the last browse render.
+    visible: std::ops::Range<usize>,
 }
 
 impl Selector {
@@ -143,9 +158,92 @@ impl Selector {
             today,
             now,
             trash: false,
+            git_enabled: false,
+            git: HashMap::new(),
+            git_requested: HashSet::new(),
+            visible: 0..0,
         };
         s.refilter();
         s
+    }
+
+    /// Turn list markers and delete-time git warnings on or off.
+    pub fn set_git_status(&mut self, enabled: bool) {
+        self.git_enabled = enabled;
+    }
+
+    pub fn git_enabled(&self) -> bool {
+        self.git_enabled
+    }
+
+    /// Directories on screen whose git state is still unknown. Each is handed
+    /// out once; call after rendering.
+    pub fn take_git_requests(&mut self) -> Vec<(String, PathBuf)> {
+        if !self.git_enabled {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for i in self.visible.clone() {
+            let Some(m) = self.matches.get(i) else {
+                continue;
+            };
+            let e = &self.entries[m.index];
+            if self.git_requested.insert(e.name.clone()) {
+                out.push((e.name.clone(), e.path.clone()));
+            }
+        }
+        out
+    }
+
+    pub fn set_git(&mut self, name: String, probe: Probe) {
+        self.git.insert(name, probe);
+    }
+
+    /// Requested probes that have not reported back yet.
+    pub fn git_pending(&self) -> bool {
+        self.git_requested.len() > self.git.len()
+    }
+
+    /// Plain-language warnings for marked directories holding unsaved git work.
+    fn delete_warnings(&mut self) -> Vec<String> {
+        if !self.git_enabled {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for name in self.marked.clone() {
+            let probe = match self.git.get(&name) {
+                Some(p @ (Probe::Repo(_) | Probe::NotRepo)) => *p,
+                _ => {
+                    let p = gitstatus::probe(&self.base.join(&name));
+                    self.git.insert(name.clone(), p);
+                    p
+                }
+            };
+            let Probe::Repo(g) = probe else { continue };
+            let mut issues = Vec::new();
+            if g.dirty {
+                issues.push("uncommitted changes".to_string());
+            }
+            if g.ahead > 0 {
+                issues.push(format!("{} unpushed commit(s)", g.ahead));
+            }
+            if !g.has_upstream && !self.trash {
+                issues.push("no upstream, commits may exist only here".to_string());
+            }
+            if !issues.is_empty() {
+                out.push(format!("{name}: {}", issues.join(", ")));
+            }
+        }
+        out
+    }
+
+    fn git_marker(&self, name: &str) -> Option<(String, usize)> {
+        let st = self.style;
+        match self.git.get(name)? {
+            Probe::NotRepo => None,
+            Probe::Failed => Some((st.dim("?"), 1)),
+            Probe::Repo(g) => Some(marker(&st, g)),
+        }
     }
 
     /// Describe deletion as recoverable (trash) rather than permanent.
@@ -165,7 +263,7 @@ impl Selector {
 
     /// True while the "type YES" confirmation is on screen.
     pub fn awaiting_delete_confirmation(&self) -> bool {
-        matches!(self.mode, Mode::Dialog(Kind::ConfirmDelete, _))
+        matches!(self.mode, Mode::Dialog(Kind::ConfirmDelete { .. }, _))
     }
 
     fn refilter(&mut self) {
@@ -211,7 +309,8 @@ impl Selector {
             }
             Key::Enter => {
                 if !self.marked.is_empty() {
-                    self.mode = Mode::Dialog(Kind::ConfirmDelete, Dialog::new(""));
+                    let warnings = self.delete_warnings();
+                    self.mode = Mode::Dialog(Kind::ConfirmDelete { warnings }, Dialog::new(""));
                 } else if self.cursor < shown {
                     return Some(Outcome::Cd(self.entry_at(self.cursor).path.clone()));
                 } else if self.has_create() {
@@ -285,7 +384,7 @@ impl Selector {
         };
         match key {
             Key::Esc | Key::Ctrl('c') => {
-                if matches!(kind, Kind::ConfirmDelete) {
+                if matches!(kind, Kind::ConfirmDelete { .. }) {
                     self.status = Some("Delete cancelled".into());
                     self.marked.clear();
                 }
@@ -360,7 +459,7 @@ impl Selector {
                     name: name.clone(),
                 }))
             }
-            Kind::ConfirmDelete => {
+            Kind::ConfirmDelete { .. } => {
                 if text != "YES" {
                     self.status = Some("Delete cancelled".into());
                     self.marked.clear();
@@ -453,6 +552,7 @@ impl Selector {
         }
 
         let mut body = Vec::new();
+        let mut last_entry = self.scroll;
         for idx in self.scroll..total {
             if body.len() + row_cost(idx) > rows {
                 break;
@@ -461,11 +561,13 @@ impl Selector {
                 body.push(String::new());
             }
             body.push(if idx < shown {
+                last_entry = idx + 1;
                 self.entry_line(idx, idx == self.cursor, w)
             } else {
                 self.create_line(idx == self.cursor, w)
             });
         }
+        self.visible = self.scroll..last_entry.min(shown);
         Screen {
             header,
             body,
@@ -543,9 +645,19 @@ impl Selector {
 
         let left = format!("{}{} {}", self.arrow(selected), icon, rendered);
         let left_w = prefix_w + width(name) + usize::from(truncated);
-        let meta = format!("{}, {:.1}", relative_time(self.now, e.mtime), m.score);
-        let meta_w = width(&meta);
-        let meta = if selected { meta } else { st.dim(&meta) };
+        let time = format!("{}, {:.1}", relative_time(self.now, e.mtime), m.score);
+        let mut meta = String::new();
+        let mut meta_w = width(&time);
+        if let Some((glyphs, glyph_w)) = self.git_marker(&e.name) {
+            meta.push_str(&glyphs);
+            if selected {
+                // Marker colors reset the foreground; restore the row's.
+                meta.push_str(st.sel_fg());
+            }
+            meta.push(' ');
+            meta_w += glyph_w + 1;
+        }
+        meta.push_str(&if selected { time } else { st.dim(&time) });
         compose(&left, left_w, Some((&meta, meta_w)), w, &bg)
     }
 
@@ -583,7 +695,7 @@ impl Selector {
                 "Enter: Confirm  Esc: Cancel",
             ),
             Kind::NewName => ("📂", "New try".to_string(), "Enter: Create  Esc: Cancel"),
-            Kind::ConfirmDelete => {
+            Kind::ConfirmDelete { .. } => {
                 let n = self.marked.len();
                 (
                     "🗑️",
@@ -629,7 +741,7 @@ impl Selector {
                 body.push(format!("Enter new try name  ({}-…)", self.today));
                 body.extend([String::new(), prompt("Name: ")]);
             }
-            Kind::ConfirmDelete => {
+            Kind::ConfirmDelete { warnings } => {
                 for name in &self.marked {
                     let text = format!("🗑️ {name}");
                     let tw = width(&text);
@@ -639,6 +751,10 @@ impl Selector {
                         w,
                         st.danger_bg(),
                     ));
+                }
+                for warning in warnings {
+                    let text = format!("⚠ {warning}");
+                    body.push(centered(&st.warn(&text), width(&text), w));
                 }
                 let note = if self.trash {
                     format!("Moved to {}/ — restore with: try undo", crate::trash::DIR)
@@ -665,6 +781,32 @@ impl Selector {
             footer,
         }
     }
+}
+
+/// Styled git glyphs and their width: `●` uncommitted, `↑n` unpushed,
+/// `↓n` behind upstream, `✓` clean and in sync.
+fn marker(st: &Style, g: &GitStatus) -> (String, usize) {
+    let mut out = String::new();
+    let mut w = 0;
+    let mut put = |styled: String, text: &str| {
+        out.push_str(&styled);
+        w += width(text);
+    };
+    if g.dirty {
+        put(st.warn("●"), "●");
+    }
+    if g.ahead > 0 {
+        let t = format!("↑{}", g.ahead);
+        put(st.warn(&t), &t);
+    }
+    if g.behind > 0 {
+        let t = format!("↓{}", g.behind);
+        put(st.dim(&t), &t);
+    }
+    if !g.dirty && g.ahead == 0 && g.behind == 0 {
+        put(st.good("✓"), "✓");
+    }
+    (out, w)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

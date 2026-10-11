@@ -212,7 +212,11 @@ pub fn run(i: &Inputs) -> Vec<Check> {
         Ok(o) if o.status.success() => check(
             Level::Ok,
             "git",
-            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            format!(
+                "{}; list markers {}",
+                String::from_utf8_lossy(&o.stdout).trim(),
+                if s.git_status { "on" } else { "off" }
+            ),
         ),
         _ => check(
             Level::Warn,
@@ -302,6 +306,8 @@ mod tests {
             delete,
             delete_source: Source::Default,
             color: true,
+            git_status: true,
+            git_status_source: Source::Default,
         }
     }
 

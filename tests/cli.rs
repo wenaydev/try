@@ -640,3 +640,145 @@ fn bad_try_delete_value_is_rejected() {
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("TRY_DELETE"));
 }
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// tries/{clean,dirty,ahead} are repos; tries/plain is not.
+fn git_sandbox() -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let tries = root.path().join("tries");
+    for n in ["clean", "dirty", "plain"] {
+        fs::create_dir_all(tries.join(n)).unwrap();
+    }
+    for n in ["clean", "dirty"] {
+        git_in(&tries.join(n), &["init", "-q"]);
+        git_in(
+            &tries.join(n),
+            &["commit", "-q", "--allow-empty", "-m", "init"],
+        );
+    }
+    fs::write(tries.join("dirty/scratch.txt"), "x").unwrap();
+
+    let bare = root.path().join("origin.git");
+    fs::create_dir_all(&bare).unwrap();
+    git_in(&bare, &["init", "-q", "--bare"]);
+    git_in(&tries, &["clone", "-q", bare.to_str().unwrap(), "ahead"]);
+    git_in(
+        &tries.join("ahead"),
+        &["commit", "-q", "--allow-empty", "-m", "one"],
+    );
+    git_in(
+        &tries.join("ahead"),
+        &["push", "-q", "-u", "origin", "HEAD"],
+    );
+    git_in(
+        &tries.join("ahead"),
+        &["commit", "-q", "--allow-empty", "-m", "two"],
+    );
+    (root, tries)
+}
+
+fn frame_line(frame: &str, name: &str) -> String {
+    frame
+        .lines()
+        .find(|l| l.contains(name))
+        .unwrap_or_else(|| panic!("no row for {name} in:\n{frame}"))
+        .to_string()
+}
+
+#[test]
+fn list_shows_git_markers() {
+    let (_root, tries) = git_sandbox();
+    let o = try_cmd(&tries, &["exec", "--and-exit"]);
+    let frame = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(frame_line(&frame, "clean").contains('✓'), "{frame}");
+    let dirty = frame_line(&frame, "dirty");
+    assert!(dirty.contains('●') && !dirty.contains('✓'), "{dirty}");
+    let ahead = frame_line(&frame, "ahead");
+    assert!(ahead.contains("↑1") && !ahead.contains('✓'), "{ahead}");
+    let plain = frame_line(&frame, "plain");
+    assert!(
+        !plain.contains('✓') && !plain.contains('●') && !plain.contains('?'),
+        "{plain}"
+    );
+}
+
+#[test]
+fn git_markers_can_be_disabled_by_env_and_config() {
+    let (root, tries) = git_sandbox();
+    let o = try_with(&tries, &[("TRY_GIT_STATUS", "0")], &["exec", "--and-exit"]);
+    let frame = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(!frame.contains('✓') && !frame.contains('●'), "{frame}");
+
+    let xdg = root.path().join("xdg");
+    write_config(&xdg, "git_status = false\n");
+    let o = bin()
+        .env("XDG_CONFIG_HOME", &xdg)
+        .env("NO_COLOR", "1")
+        .arg("--path")
+        .arg(&tries)
+        .args(["exec", "--and-exit"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&o.stderr).contains('●'));
+}
+
+#[test]
+fn delete_dialog_warns_about_unsaved_git_work() {
+    let (_root, tries) = git_sandbox();
+    let render = |env: &[(&str, &str)], name: &str| {
+        let keys = format!("--and-keys={name},CTRL-D,ENTER");
+        let o = try_with(&tries, env, &["exec", "--and-exit", &keys]);
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+
+    let dirty = render(&[], "dirty");
+    assert!(dirty.contains("⚠ dirty: uncommitted changes"), "{dirty}");
+
+    let ahead = render(&[], "ahead");
+    assert!(ahead.contains("⚠ ahead: 1 unpushed commit(s)"), "{ahead}");
+
+    // A clean repo with nothing to lose gets no warning in trash mode...
+    let clean = render(&[], "clean");
+    assert!(!clean.contains('⚠'), "{clean}");
+    // ...but a permanent delete flags commits that exist only locally.
+    let clean_rm = render(&[("TRY_DELETE", "remove")], "clean");
+    assert!(clean_rm.contains("⚠ clean: no upstream"), "{clean_rm}");
+
+    // Not a repo: nothing to say.
+    assert!(!render(&[("TRY_DELETE", "remove")], "plain").contains('⚠'));
+
+    // Disabled: no probing, no warning.
+    let off = render(&[("TRY_GIT_STATUS", "0")], "dirty");
+    assert!(!off.contains('⚠'), "{off}");
+}
+
+#[test]
+fn doctor_and_config_mention_git_status() {
+    let (_root, tries) = sandbox();
+    let o = try_cmd(&tries, &["doctor"]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("list markers on"));
+    let o = try_with(&tries, &[("TRY_GIT_STATUS", "off")], &["config"]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("git       off  [$TRY_GIT_STATUS]"));
+    let o = try_with(&tries, &[("TRY_GIT_STATUS", "maybe")], &["config"]);
+    assert_eq!(o.status.code(), Some(1));
+}

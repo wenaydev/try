@@ -5,10 +5,12 @@
 
 use super::keys::Key;
 use super::selector::{Outcome, Screen, Selector};
+use crate::gitstatus;
 use crossterm::event::{self, Event};
 use crossterm::{cursor, execute, terminal};
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Write};
+use std::time::Duration;
 
 /// Test hooks (`--and-keys`, `--and-exit`, `--and-confirm`).
 #[derive(Debug, Default)]
@@ -78,7 +80,18 @@ pub fn compose(screen: &Screen, height: usize, interactive: bool) -> String {
 
 fn draw(sel: &mut Selector, interactive: bool) -> io::Result<()> {
     let (w, h) = size();
-    let frame = compose(&sel.render(w, h), h, interactive);
+    let mut screen = sel.render(w, h);
+    if !interactive {
+        // Scripted runs must be deterministic: resolve git state inline, then redraw.
+        let requests = sel.take_git_requests();
+        if !requests.is_empty() {
+            for (name, path) in requests {
+                sel.set_git(name, gitstatus::probe(&path));
+            }
+            screen = sel.render(w, h);
+        }
+    }
+    let frame = compose(&screen, h, interactive);
     let mut err = io::stderr().lock();
     err.write_all(frame.as_bytes())?;
     err.flush()
@@ -148,14 +161,36 @@ impl Drop for RawGuard {
 
 fn run_interactive(sel: &mut Selector) -> io::Result<Outcome> {
     let _guard = RawGuard::enter()?;
+    // Git markers fill in as probes finish; the list is usable immediately.
+    let worker = sel.git_enabled().then(|| gitstatus::Worker::spawn(4));
+    let mut redraw = true;
     loop {
-        draw(sel, true)?;
-        // Resize (and any other event) just triggers a redraw.
+        if let Some(w) = &worker {
+            for (name, probe) in w.drain() {
+                sel.set_git(name, probe);
+                redraw = true;
+            }
+        }
+        if redraw {
+            draw(sel, true)?;
+            if let Some(w) = &worker {
+                for (name, path) in sel.take_git_requests() {
+                    w.submit(name, path);
+                }
+            }
+            redraw = false;
+        }
+        // While probes are in flight, wake regularly to pick up results.
+        if worker.is_some() && sel.git_pending() && !event::poll(Duration::from_millis(40))? {
+            continue;
+        }
+        // Resize and other events just trigger a redraw.
         if let Event::Key(ev) = event::read()? {
             if let Some(done) = Key::from_event(ev).and_then(|k| sel.handle_key(k)) {
                 return Ok(done);
             }
         }
+        redraw = true;
     }
 }
 

@@ -28,6 +28,26 @@ Keys: `↑/↓` `Ctrl-P/N` `Ctrl-J/K` navigate · `Enter` select · `Ctrl-T` new
 `Ctrl-R` rename · `Ctrl-G` graduate to a real project · `Ctrl-D` mark for delete
 (Enter, then type `YES`) · `Esc` cancel.
 
+## Git markers
+
+Directories that are git repositories (clones and worktrees) get a marker next to the age:
+
+| marker | meaning |
+|---|---|
+| `●` | uncommitted changes (modified, staged or untracked files) |
+| `↑2` | 2 commits not pushed to the upstream branch |
+| `↓1` | 1 commit behind upstream |
+| `✓` | clean and in sync (also shown for repos with no upstream) |
+| `?` | git could not answer (timed out or refused, e.g. "dubious ownership") |
+
+Only the rows on screen are checked, in the background, so the list is usable immediately and
+markers fill in a moment later. Each check is one `git status` that is cut short at the first
+changed file and killed after 3 s, and it never takes git's optional locks.
+
+The delete confirmation also warns about unsaved work (`⚠ name: uncommitted changes`,
+`⚠ name: 2 unpushed commit(s)`, and in `remove` mode `no upstream, commits may exist only here`).
+Turn it all off with `git_status = false` or `TRY_GIT_STATUS=0`.
+
 ## Deleting is recoverable
 
 `Ctrl-D` (then `Enter`, then type `YES`) moves directories to `<tries>/.trash/<batch>/`
@@ -54,6 +74,7 @@ writes a commented starter file.
 | `projects` | `TRY_PROJECTS` | parent of `path` |
 | `delete` = `"trash"`/`"remove"` | `TRY_DELETE` | `trash` |
 | `colors` = `true`/`false` | `NO_COLOR` | `true` |
+| `git_status` = `true`/`false` | `TRY_GIT_STATUS` | `true` |
 
 A malformed config is an error (not silently ignored); `try doctor` still runs so you can see why.
 

@@ -7,7 +7,7 @@ use crate::paths::{absolutize, home};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub const KNOWN_KEYS: &[&str] = &["path", "projects", "delete", "colors"];
+pub const KNOWN_KEYS: &[&str] = &["path", "projects", "delete", "colors", "git_status"];
 
 pub const TEMPLATE: &str = "\
 # try configuration
@@ -24,6 +24,9 @@ pub const TEMPLATE: &str = "\
 
 # Set to false to disable colors (NO_COLOR=1 also does).
 # colors = true
+
+# Show git markers in the list (● uncommitted, ↑n unpushed, ✓ clean). TRY_GIT_STATUS=0 disables.
+# git_status = true
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +61,7 @@ pub struct Config {
     pub projects: Option<String>,
     pub delete: Option<DeleteMode>,
     pub colors: Option<bool>,
+    pub git_status: Option<bool>,
     /// Keys we do not know (typos), reported by `try doctor`.
     pub unknown: Vec<String>,
 }
@@ -118,6 +122,13 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         .ok_or_else(|| "`colors` must be true or false".to_string())?,
                 )
             }
+            "git_status" => {
+                cfg.git_status = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| "`git_status` must be true or false".to_string())?,
+                )
+            }
             other => cfg.unknown.push(other.to_string()),
         }
     }
@@ -153,6 +164,17 @@ pub struct Settings {
     pub delete: DeleteMode,
     pub delete_source: Source,
     pub color: bool,
+    pub git_status: bool,
+    pub git_status_source: Source,
+}
+
+/// `1/true/on/yes` and `0/false/off/no`, case-insensitive.
+pub fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
 }
 
 impl Settings {
@@ -205,6 +227,17 @@ impl Settings {
             && env("NO_COLORS").is_none()
             && cfg.colors != Some(false);
 
+        let (git_status, git_status_source) = if let Some(v) = env("TRY_GIT_STATUS") {
+            let b = parse_bool(&v).ok_or_else(|| {
+                format!("TRY_GIT_STATUS must be 0/1/true/false/on/off, got \"{v}\"")
+            })?;
+            (b, Source::Env("TRY_GIT_STATUS"))
+        } else if let Some(b) = cfg.git_status {
+            (b, Source::Config)
+        } else {
+            (true, Source::Default)
+        };
+
         Ok(Settings {
             tries,
             tries_source,
@@ -213,6 +246,8 @@ impl Settings {
             delete,
             delete_source,
             color,
+            git_status,
+            git_status_source,
         })
     }
 }
@@ -308,6 +343,31 @@ mod tests {
         let err =
             Settings::resolve(&none, None, false, &env_of(&[("TRY_DELETE", "x")])).unwrap_err();
         assert!(err.contains("TRY_DELETE"));
+    }
+
+    #[test]
+    fn git_status_setting() {
+        let none = Config::default();
+        let get = |cfg: &Config, env: &[(&str, &str)]| {
+            Settings::resolve(cfg, None, false, &env_of(env))
+                .map(|s| (s.git_status, s.git_status_source))
+        };
+        assert_eq!(get(&none, &[]).unwrap(), (true, Source::Default));
+        let off = Config {
+            git_status: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(get(&off, &[]).unwrap(), (false, Source::Config));
+        assert_eq!(
+            get(&off, &[("TRY_GIT_STATUS", "ON")]).unwrap(),
+            (true, Source::Env("TRY_GIT_STATUS"))
+        );
+        assert!(get(&none, &[("TRY_GIT_STATUS", "maybe")])
+            .unwrap_err()
+            .contains("TRY_GIT_STATUS"));
+        assert!(parse("git_status = \"yes\"")
+            .unwrap_err()
+            .contains("`git_status`"));
     }
 
     #[test]
