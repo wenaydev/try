@@ -52,9 +52,9 @@ pub struct Inputs<'a> {
     pub shell: Option<Shell>,
 }
 
-/// Rc files where a `try` wrapper may live.
+/// Startup files (and drop-in directories) where a `try` wrapper may live.
 fn rc_candidates(home: &Path) -> Vec<PathBuf> {
-    [
+    let mut out: Vec<PathBuf> = [
         ".bashrc",
         ".bash_profile",
         ".profile",
@@ -64,7 +64,16 @@ fn rc_candidates(home: &Path) -> Vec<PathBuf> {
     ]
     .iter()
     .map(|f| home.join(f))
-    .collect()
+    .collect();
+    // Drop-in directories: Fedora's ~/.bashrc.d and fish's conf.d.
+    for dir in [".bashrc.d", ".config/fish/conf.d"] {
+        if let Ok(rd) = fs::read_dir(home.join(dir)) {
+            let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            files.sort();
+            out.extend(files);
+        }
+    }
+    out
 }
 
 fn wrapper_installed(home: &Path) -> Option<PathBuf> {
@@ -340,6 +349,17 @@ mod tests {
         assert!(find(&checks, "tries").detail.contains("1 dirs"));
         assert_eq!(find(&checks, "wrapper").level, Level::Ok);
         assert!(find(&checks, "delete").detail.contains("trash is empty"));
+    }
+
+    #[test]
+    fn wrapper_in_a_drop_in_directory_is_found() {
+        let root = tempfile::tempdir().unwrap();
+        let drop_in = root.path().join(".bashrc.d");
+        fs::create_dir_all(&drop_in).unwrap();
+        fs::write(drop_in.join("try.sh"), "eval \"$(command try init)\"\n").unwrap();
+        assert_eq!(wrapper_installed(root.path()), Some(drop_in.join("try.sh")));
+        fs::write(drop_in.join("try.sh"), "# nothing here\n").unwrap();
+        assert_eq!(wrapper_installed(root.path()), None);
     }
 
     #[test]

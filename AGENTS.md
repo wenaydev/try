@@ -106,6 +106,15 @@ cargo build --release
 typed) or raw bytes. `TRY_WIDTH` / `TRY_HEIGHT` fake the terminal size. A scripted run must end in
 a terminating key or it is treated as cancel.
 
+### Deploying to the dev machine
+
+The maintainer's shells run the release build in place: `~/.local/bin/try` is a symlink to
+`<repo>/target/release/try`, and `~/.bashrc.d/try.sh` runs `eval "$(try init)"` for each new shell
+(setup is in the README). So **after changing code, run `cargo build --release`**; that is the whole
+deployment, and open shells use the new binary on their next `try`. `cargo build` (debug) does not
+deploy. Do not run `try install` on that machine (it would append a second, static wrapper), and do
+not replace the symlink with a copied binary. Keep the symlink and drop-in files outside the repo.
+
 ### Upstream conformance suite
 
 The upstream repo ships a language-agnostic suite. It is not vendored; clone it when needed:

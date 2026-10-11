@@ -12,6 +12,28 @@ eval "$(try init ~/src/tries)"  # or: try install
 try init ~/src/tries | source
 ```
 
+### Always run the latest build (development machines)
+
+Point a symlink on your `PATH` at the release binary and let the shell integration re-initialise
+on every new shell:
+
+```bash
+ln -sfn "$PWD/target/release/try" ~/.local/bin/try          # ~/.local/bin must be on PATH
+mkdir -p ~/.bashrc.d && cat > ~/.bashrc.d/try.sh <<'EOF'
+if try_bin=$(type -P try); then eval "$("$try_bin" init)"; fi
+unset try_bin
+EOF
+```
+
+(`~/.bashrc.d/` is sourced by Fedora's stock `~/.bashrc`; elsewhere put the `if` block in `~/.bashrc`.
+zsh: `~/.zshrc`. fish: `~/.config/fish/conf.d/try.fish` with `try init | source`.)
+
+After that, `cargo build --release` is the whole deployment: the wrapper function calls the binary
+by path on every use, so even shells that are already open pick the new build up on the next `try`,
+and new shells regenerate the wrapper itself from it. `try doctor` confirms the wiring.
+A debug build (`cargo build`) does not affect it, and `cargo install` writes to `~/.cargo/bin`,
+a different location.
+
 ## Usage
 
 ```
