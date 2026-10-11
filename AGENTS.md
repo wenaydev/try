@@ -10,6 +10,50 @@ clone / PR checkout / worktree / rename / graduate / delete. Beyond the port it 
 file, a recoverable trash (`try undo`), `try doctor`, and git status markers.
 Binary name is `try`, crate is `try-cli` (lib `try_cli`). MIT, MSRV 1.82, edition 2021.
 
+## Public repository: nothing private, ever
+
+This repo is **public** on GitHub, and git history is permanent: assume anything ever pushed has
+been copied. These rules apply to every commit, file, commit message, test and doc, now and in
+future sessions.
+
+**Never commit or push**
+- Keys or credentials of any kind: SSH/GPG private keys, API tokens, passwords, `.env` files,
+  `known_hosts`, SSH config, `.netrc`, `.git-credentials`, shell history, password-manager exports.
+- A real `config.toml` copied from a home directory, or anything else lifted from `~`.
+- Personal details: real email addresses, real names beyond the license line, home-directory paths
+  containing a real username, hostnames or IPs of private machines.
+
+**Use placeholders instead**: `/home/user`, `user@example.com`, `git@github.com:owner/repo.git`,
+and TEST-NET addresses (`192.0.2.x`) in docs, tests and examples. Tests use temp dirs and synthetic
+data. If a test needs a token-shaped string, build it at runtime (`"x".repeat(40)`) so no literal
+lives in source.
+
+**Scrub before you paste.** Output from `try doctor`, `try config`, `git config --list`, `env`,
+`ssh -v`, and terminal captures contains real paths, usernames and sometimes secrets. Replace them
+before they go into a commit message, README, issue text, or test fixture.
+
+**Credentials never travel in URLs or arguments.** No `https://user:token@...` remotes (they end up in
+`.git/config`). Use SSH or a credential helper. Do not disable host key checking.
+
+**The program itself stays local.** It must not transmit user paths, directory names, or git data
+anywhere; its only external process is `git`, run locally.
+
+**Enforcement (a safety net, not a substitute for care)**
+- `.githooks/pre-commit` blocks staged secrets, key/credential file names, personal home paths,
+  non-placeholder email addresses and private IPs. It reports file:line only, never the value.
+  Enable it once per clone: `git config core.hooksPath .githooks`.
+- Before **every push** run `.githooks/pre-commit --all` and skim `git diff origin/main..HEAD`.
+- Never bypass with `--no-verify`. If the hook flags a false positive, change the content to a
+  placeholder (or, if the pattern is truly wrong, fix the hook in its own reviewed commit).
+- Keep `.gitignore` covering secret file types; extend it rather than relying on memory.
+- Commit metadata is public too (author name and email appear in every commit). Do not change the
+  configured identity, and do not write it into files.
+
+**If something private is committed**: stop and tell the user before doing anything else.
+- Not pushed yet: remove it from the commit (amend / rewrite local history) and re-run the audit.
+- Already pushed: treat it as compromised. **Rotate or revoke the secret first**; rewriting history
+  and force-pushing is secondary, and only done with the user's explicit approval.
+
 ## The one design rule: stdout is a script
 
 A child process cannot `cd` its parent. The shell wrapper from `try init` runs
@@ -123,7 +167,7 @@ the layout math (`unicode-width`) goes wrong. Rename uses 📝 for that reason.
 
 ## Git / remote
 
-`origin` is `git@github.com:wenaydev/try.git`, default branch `main`. Pushing needs an SSH key and
+`origin` is `git@github.com:wenaydev/try.git` (public repo, see the rules above), default branch `main`. Pushing needs an SSH key and
 GitHub's host key on the machine; if `git ls-remote origin` says `Host key verification failed`, the
 account has no `~/.ssh/known_hosts` entry yet. Do not disable host key checking to work around it.
 Commit messages: imperative subject, body explains why. Do not commit `target/`.

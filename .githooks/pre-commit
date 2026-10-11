@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# This repository is PUBLIC. Block commits that would publish secrets or
+# personal details. Enable once per clone:  git config core.hooksPath .githooks
+#
+#   .githooks/pre-commit          scan what is staged (this is what git runs)
+#   .githooks/pre-commit --all    audit every tracked file
+#
+# It reports file and line only, never the matched text, so a leaked value is
+# not copied into terminal scrollback or CI logs.
+set -u
+
+mode=staged
+[ "${1:-}" = "--all" ] && mode=all
+fail=0
+flag() { printf '  %s\n' "$1" >&2; fail=1; }
+
+if [ "$mode" = all ]; then
+  files=$(git ls-files)
+else
+  files=$(git diff --cached --name-only --diff-filter=ACMR)
+fi
+
+# Lines being added to $1 (or the whole file in --all mode), with line numbers.
+added_lines() {
+  if [ "$mode" = all ]; then
+    grep -InE '' -- "$1" 2>/dev/null
+  else
+    git diff --cached -U0 --no-color -- "$1" | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//' | nl -ba -s:
+  fi
+}
+
+# label|ERE   (matches are reported without their text)
+patterns=(
+  'private key|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  'GitHub token|(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
+  'AWS access key|AKIA[0-9A-Z]{16}'
+  'Slack token|xox[abprs]-[A-Za-z0-9-]{10,}'
+  'API key|sk-[A-Za-z0-9]{32,}'
+  'hard-coded credential|(api[_-]?key|secret|token|passw(or)?d)[A-Za-z_]*["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{8,}["'"'"']'
+  'private network address|\b(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b'
+)
+# Home-directory paths identify a person; placeholders are fine.
+home_re='/(home|Users)/[A-Za-z0-9._-]+'
+home_ok='^/(home|Users)/(user|you|name|username|example|me|runner)$'
+# Emails: only obvious placeholders and public service addresses are fine.
+email_re='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]+'
+email_ok='^(git|deploy)@|@(users\.noreply\.github\.com|github\.com|gitlab\.com|host\.com|git\.example\.com|example\.(com|org|net))$'
+
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in .githooks/*|Cargo.lock) continue ;; esac
+
+  case "$(basename "$f")" in
+    .env|.env.*|*.pem|*.key|*.p12|*.pfx|id_rsa*|id_ed25519*|id_ecdsa*|known_hosts*|.git-credentials|.netrc|*.kdbx)
+      flag "forbidden file name: $f" ;;
+  esac
+
+  lines=$(added_lines "$f")
+  [ -z "$lines" ] && continue
+
+  for p in "${patterns[@]}"; do
+    label=${p%%|*}; re=${p#*|}
+    while IFS= read -r hit; do
+      [ -n "$hit" ] && flag "$label: $f:${hit%%:*}"
+    done < <(printf '%s\n' "$lines" | grep -E -- "$re" | cut -d: -f1)
+  done
+
+  # Few lines match the broad regexes, so per-hit filtering stays cheap.
+  while IFS= read -r l; do
+    if printf '%s\n' "${l#*:}" | grep -oE "$home_re" | grep -qvE "$home_ok"; then
+      flag "personal home path: $f:${l%%:*}"
+    fi
+  done < <(printf '%s\n' "$lines" | grep -E -- "$home_re")
+
+  while IFS= read -r l; do
+    if printf '%s\n' "${l#*:}" | grep -oE "$email_re" | grep -qvE "$email_ok"; then
+      flag "email address: $f:${l%%:*}"
+    fi
+  done < <(printf '%s\n' "$lines" | grep -E -- "$email_re")
+done <<<"$files"
+
+if [ "$fail" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+Refusing: this repo is public. Remove the item above (use a placeholder such as
+/home/user or user@example.com), or keep it out of git entirely via .gitignore.
+If a real secret was already staged, treat it as leaked and rotate it.
+MSG
+  exit 1
+fi

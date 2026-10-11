@@ -1,1 +1,21 @@
 /target
+
+# Secrets and credentials: never commit these (this repo is public).
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+known_hosts*
+.ssh/
+.netrc
+.git-credentials
+
+# Local noise
+*.log
+.DS_Store
