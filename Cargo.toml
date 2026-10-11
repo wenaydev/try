@@ -1,0 +1,29 @@
+[package]
+name = "try-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Fresh directories for every vibe: a fuzzy-search workspace manager for throwaway experiments"
+license = "MIT"
+rust-version = "1.82"
+
+[lib]
+name = "try_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "try"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+crossterm = "0.29"
+toml = "0.9"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
