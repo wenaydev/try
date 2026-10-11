@@ -82,3 +82,7 @@ cargo test                                   # unit + black-box tests
 The upstream `spec/tests/runner.sh` suite runs unmodified against this binary (399/399 with
 `TRY_DELETE=remove`; with the default trash mode three delete assertions that look for `rm -rf`
 fail, by design). Point `XDG_CONFIG_HOME` somewhere empty when running it.
+
+## License
+
+MIT. Based on [tobi/try](https://github.com/tobi/try) (c) 2025 Tobi Lutke; see `LICENSE`.
